@@ -2,7 +2,7 @@
 
 A cloud-native ETL pipeline that ingests YouTube trending video data across 10 regions, transforms it through a medallion architecture (Bronze > Silver > Gold), enforces data quality gates, and produces analytics-ready aggregations — all orchestrated by AWS Step Functions.
 
-![Architecture Diagram](YouTube%20Trending%20Data%20Pipeline.png)
+![Architecture Diagram](docs/architecture.png)
 
 ---
 
@@ -91,32 +91,23 @@ Data Sources          Bronze              Silver            Quality Gate        
 
 ```
 youtube-data-pipeline-2026/
-│
-├── lambdas/
-│   ├── youtube_api_integstion/        # Ingestion Lambda
-│   │   └── lambda_function.py         # Fetches trending videos & categories from YouTube API
-│   └── json_to_parquet/               # Reference data transformation Lambda
-│       └── lambda_function.py         # Converts JSON category mappings to Parquet
-│
-├── glue_jobs/
-│   ├── bronze_to_silver_statistics.py # PySpark job: raw data → cleansed statistics
-│   └── silver_to_gold_analytics.py    # PySpark job: cleansed data → business aggregations
-│
-├── data_quality/
-│   └── dq_lambda.py                   # Data quality validation Lambda
-│
-├── step_functions/
-│   └── pipeline_orchestation.json     # Step Functions state machine definition
-│
-├── scripts/
-│   ├── aws_copy.sh                    # Upload historical data to Bronze S3 bucket
-│   └── information.md                 # AWS resource names & configuration reference
-│
-├── data/                              # Reference & historical data
-│   ├── {region}videos.csv             # Kaggle trending video datasets (10 regions)
-│   └── {region}_category_id.json      # YouTube category ID mappings (10 regions)
-│
-└── YouTube Trending Data Pipeline.png # Architecture diagram
+├── src/
+│   ├── lambdas/
+│   │   ├── youtube_ingestion/handler.py  # YouTube API ingestion Lambda
+│   │   ├── json_to_parquet/handler.py    # Reference data transformation Lambda
+│   │   └── data_quality/handler.py       # Silver-layer quality gate Lambda
+│   └── glue_jobs/
+│       ├── bronze_to_silver_statistics.py
+│       └── silver_to_gold_analytics.py
+├── infrastructure/iam/                    # AWS IAM policies
+├── orchestration/step_functions/
+│   └── pipeline.asl.json                   # Step Functions definition
+├── data/sample/                            # Local/reference sample data
+├── scripts/upload_historical_data.sh       # Historical data upload utility
+├── docs/                                   # Architecture and AWS references
+├── tests/                                  # Unit and integration tests
+├── .gitignore
+└── README.md
 ```
 
 ---
@@ -125,7 +116,7 @@ youtube-data-pipeline-2026/
 
 ### Bronze Layer (Raw Data)
 
-The ingestion Lambda (`youtube_api_integstion`) fetches data from the YouTube Data API v3:
+The ingestion Lambda (`src/lambdas/youtube_ingestion`) fetches data from the YouTube Data API v3:
 
 - **Trending videos** — top 50 trending videos per region
 - **Category mappings** — video category ID-to-name reference data
@@ -137,7 +128,7 @@ s3://bronze-bucket/youtube/raw_statistics/region=US/date=2026-04-01/hour=12/
 s3://bronze-bucket/youtube/raw_statistics_reference_data/region=US/
 ```
 
-Historical Kaggle CSV data can also be uploaded to the Bronze layer via the `aws_copy.sh` script.
+Historical Kaggle CSV data can also be uploaded to the Bronze layer via `scripts/upload_historical_data.sh`.
 
 ### Silver Layer (Cleansed Data)
 
@@ -274,7 +265,7 @@ aws sns subscribe --topic-arn <topic-arn> --protocol email --notification-endpoi
 | Variable            | Description                        | Example                                     |
 |---------------------|------------------------------------|----------------------------------------------|
 | `YOUTUBE_API_KEY`   | YouTube Data API v3 key            | `AIzaSy...`                                  |
-| `S3_BUCKET_BRONZE`  | Bronze S3 bucket name              | `yt-data-pipeline-bronze-ap-south-1-dev`     |
+| `S3_BUCKET_BRONZE`  | Bronze S3 bucket name              | `<bronze-bucket>`                            |
 | `YOUTUBE_REGIONS`   | Comma-separated region codes       | `US,GB,CA,DE,FR,IN,JP,KR,MX,RU`             |
 
 #### Data Quality Lambda
@@ -307,8 +298,8 @@ Glue job parameters are passed via the Step Functions state machine or directly 
 ### 1. Upload Glue job scripts to S3
 
 ```bash
-aws s3 cp glue_jobs/bronze_to_silver_statistics.py s3://yt-data-pipeline-script-<region>-<env>/glue_jobs/
-aws s3 cp glue_jobs/silver_to_gold_analytics.py s3://yt-data-pipeline-script-<region>-<env>/glue_jobs/
+aws s3 cp src/glue_jobs/bronze_to_silver_statistics.py s3://yt-data-pipeline-script-<region>-<env>/glue_jobs/
+aws s3 cp src/glue_jobs/silver_to_gold_analytics.py s3://yt-data-pipeline-script-<region>-<env>/glue_jobs/
 ```
 
 ### 2. Deploy Lambda functions
@@ -317,12 +308,12 @@ Package and deploy each Lambda:
 
 ```bash
 # Ingestion Lambda
-cd lambdas/youtube_api_integstion
-zip -r function.zip lambda_function.py
+cd src/lambdas/youtube_ingestion
+zip -r function.zip handler.py
 aws lambda create-function \
   --function-name yt-data-pipeline-youtube-ingestion-<env> \
   --runtime python3.9 \
-  --handler lambda_function.lambda_handler \
+  --handler handler.lambda_handler \
   --zip-file fileb://function.zip \
   --role <lambda-execution-role-arn> \
   --timeout 300 \
@@ -348,16 +339,18 @@ aws glue create-job \
 ```bash
 aws stepfunctions create-state-machine \
   --name yt-data-pipeline \
-  --definition file://step_functions/pipeline_orchestation.json \
+  --definition file://orchestration/step_functions/pipeline.asl.json \
   --role-arn <step-functions-role-arn>
 ```
 
 ### 5. (Optional) Upload historical Kaggle data
 
 ```bash
-cd data
-bash ../scripts/aws_copy.sh
+BRONZE_BUCKET=<bronze-bucket> bash scripts/upload_historical_data.sh
 ```
+
+The Step Functions file is an environment-neutral template. Replace its `<region>`,
+`<account-id>`, `<env>`, and bucket placeholders during deployment.
 
 ---
 
